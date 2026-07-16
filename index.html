@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Road Cast - Sesli Yol Rehberi</title>
+    <!-- Tailwind CSS (Tasarım için harika bir kütüphane, yükleme gerektirmez) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0B132B; color: #FFFFFF; }
+    </style>
+</head>
+<body class="font-sans antialiased flex flex-col min-h-screen justify-between">
+
+    <!-- Hero Section -->
+    <main class="flex-grow flex items-center justify-center px-6 py-20">
+        <div class="max-w-3xl text-center">
+            <!-- Logo Alanı (Logonuzun adını logo.png yapıp aynı klasöre atarsanız görünür) -->
+            <div class="mb-8 flex justify-center">
+                <div class="w-32 h-32 bg-indigo-900 rounded-full flex items-center justify-center shadow-lg border border-indigo-500/30">
+                    <span class="text-3xl font-extrabold tracking-wider text-indigo-300">RC</span>
+                </div>
+            </div>
+
+            <h1 class="text-5xl font-extrabold tracking-tight mb-4 sm:text-6xl bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">
+                Road Cast
+            </h1>
+            
+            <p class="text-lg text-slate-300 mb-8 max-w-xl mx-auto leading-relaxed">
+                Yolculuklarınızı hikayeye dönüştüren, konuma duyarlı akıllı sesli gezi rehberi. Telefonunuzu kenara bırakın, yolun ve tarihin keyfini çıkarın.
+            </p>
+
+            <!-- İndirme Butonları -->
+            <div class="flex flex-col sm:flex-row justify-center gap-4 mb-12">
+                <!-- App Store -->
+                <a href="#" class="inline-flex items-center justify-center px-6 py-3 border border-slate-700 rounded-xl bg-slate-900/50 hover:bg-slate-800 transition duration-300 gap-3 group">
+                    <span class="text-left">
+                        <span class="block text-xs text-slate-400 uppercase">YAKINDA</span>
+                        <span class="text-sm font-semibold text-white group-hover:text-indigo-400">App Store</span>
+                    </span>
+                </a>
+                
+                <!-- Google Play (Bunu kendi dahili test linkinizle veya yayına girdiğinde mağaza linkiyle değiştirebilirsiniz) -->
+                <a href="BURAYA_PLAY_STORE_TEST_LINKINI_YAZIN" class="inline-flex items-center justify-center px-6 py-3 border border-indigo-500/30 rounded-xl bg-indigo-600 hover:bg-indigo-700 transition duration-300 gap-3">
+                    <span class="text-left">
+                        <span class="block text-xs text-indigo-200 uppercase">HEMEN İNDİR</span>
+                        <span class="text-sm font-semibold text-white">Google Play</span>
+                    </span>
+                </a>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer ve Gizlilik Politikası Linki (Google/Apple buraya bakacaktır!) -->
+    <footer class="border-t border-slate-800/80 py-8 bg-slate-950/40">
+        <div class="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-4 text-sm text-slate-400">
+            <div>
+                &copy; 2026 Road Cast. Tüm hakları saklıdır.
+            </div>
+            <div class="flex gap-6">
+                <!-- Buradaki Gizlilik Politikası linkini az önce oluşturduğun Gist linkiyle değiştirebilirsin -->
+                <a href="GIST_LINKINI_BURAYA_YAZ" target="_blank" class="hover:text-white transition">Gizlilik Politikası (Privacy Policy)</a>
+                <a href="mailto:homeraksay@gmail.com" class="hover:text-white transition">İletişim</a>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
