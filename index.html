@@ -1,72 +1,33 @@
 <!DOCTYPE html>
 <html lang="tr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Road Cast - Sesli Yol Rehberi</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body { background-color: #0B132B; color: #FFFFFF; }
-        /* Logoyu orantılı göstermek için küçük bir ayar */
-        .app-logo {
-            max-height: 128px; /* 32 * 4 (p-8 size) */
-            max-width: 100%;
-            height: auto;
-            width: auto;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="RoadCast, yolculuk sırasında çevrenizdeki hikâyeleri sesli olarak anlatan konuma duyarlı gezi rehberi.">
+  <meta name="theme-color" content="#0c0922">
+  <title>RoadCast | Yolun Hikâyesi</title>
+  <style>
+    :root { --night:#0c0922; --panel:#191333; --ink:#fffdf7; --muted:#c3bbd5; --cyan:#20d8ff; --gold:#ffad16; }
+    * { box-sizing:border-box; } html { scroll-behavior:smooth; }
+    body { margin:0; color:var(--ink); background:radial-gradient(circle at 17% 0%,#272052 0,transparent 34rem),radial-gradient(circle at 92% 8%,#123657 0,transparent 30rem),var(--night); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    a { color:inherit; text-decoration:none; }.wrap { width:min(1120px,calc(100% - 40px)); margin:auto; }
+    nav { height:82px; display:flex; align-items:center; justify-content:space-between; gap:20px; }.brand { display:flex; align-items:center; gap:10px; font-weight:900; font-size:1.18rem; letter-spacing:.04em; }.brand img { width:46px; height:46px; object-fit:contain; }.nav-link { border:1px solid rgba(255,255,255,.15); color:#fff; padding:11px 16px; border-radius:12px; font-weight:750; font-size:.92rem; }
+    .hero { min-height:650px; display:grid; grid-template-columns:1.12fr .88fr; align-items:center; gap:36px; padding:64px 0 92px; }.eyebrow { color:var(--cyan); letter-spacing:.13em; font-size:.78rem; font-weight:900; text-transform:uppercase; }h1 { margin:13px 0 20px; max-width:690px; font-size:clamp(2.65rem,6vw,5.5rem); line-height:.98; letter-spacing:-.065em; }h1 em { font-style:normal; background:linear-gradient(90deg,var(--cyan),#bb85ff); -webkit-background-clip:text; background-clip:text; color:transparent; }.lead { max-width:620px; color:var(--muted); font-size:1.17rem; line-height:1.7; }.actions { display:flex; flex-wrap:wrap; gap:12px; margin-top:30px; }.button { display:inline-flex; align-items:center; justify-content:center; min-height:50px; border-radius:14px; padding:0 20px; font-weight:850; }.button.primary { color:#171023; background:linear-gradient(100deg,#ffbe2f,#ff8d11); box-shadow:0 12px 32px rgba(255,151,20,.22); }.button.secondary { border:1px solid rgba(51,218,255,.42); background:rgba(15,79,113,.36); color:#c5f6ff; }
+    .hero-art { position:relative; min-height:445px; display:grid; place-items:center; }.hero-art:before { content:""; width:310px; height:310px; border-radius:50%; position:absolute; background:radial-gradient(circle,#8e56ff 0,rgba(72,216,255,.35) 40%,transparent 72%); filter:blur(12px); opacity:.78; }.hero-logo { width:min(390px,88%); position:relative; filter:drop-shadow(0 28px 24px rgba(0,0,0,.45)); }.floating { position:absolute; padding:13px 16px; background:rgba(28,21,56,.82); border:1px solid rgba(255,255,255,.13); border-radius:15px; backdrop-filter:blur(12px); box-shadow:0 12px 35px rgba(0,0,0,.22); font-size:.88rem; font-weight:750; }.one { top:30px; right:0; }.two { bottom:38px; left:0; }
+    .features { padding:18px 0 98px; }.section-title { max-width:680px; font-size:clamp(2rem,4vw,3.25rem); letter-spacing:-.05em; margin:0 0 14px; }.section-copy { color:var(--muted); line-height:1.65; margin:0 0 30px; }.cards { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }.card { background:linear-gradient(145deg,rgba(38,28,73,.94),rgba(20,16,43,.88)); border:1px solid rgba(183,157,255,.18); padding:28px; border-radius:22px; min-height:236px; }.icon { display:grid; place-items:center; width:49px; height:49px; margin-bottom:18px; border-radius:14px; background:#2b2155; font-size:1.55rem; }.card h3 { margin:0 0 9px; font-size:1.25rem; }.card p { margin:0; color:var(--muted); line-height:1.58; }
+    .journey { margin:0 0 90px; border:1px solid rgba(64,222,255,.2); border-radius:28px; padding:clamp(28px,5vw,58px); background:linear-gradient(110deg,rgba(9,94,125,.45),rgba(37,22,75,.78)); }.journey-grid { display:grid; grid-template-columns:1fr 1fr; gap:40px; align-items:center; }.journey ul { margin:18px 0 0; padding:0; list-style:none; }.journey li { padding:12px 0; border-bottom:1px solid rgba(255,255,255,.11); color:#e9e5f4; }.journey li:last-child { border-bottom:0; }.note { color:#b7eefd; font-size:.9rem; line-height:1.55; }footer { padding:33px 0 43px; color:#a8a0ba; font-size:.9rem; border-top:1px solid rgba(255,255,255,.09); }.foot { display:flex; justify-content:space-between; align-items:center; gap:16px; }.foot a { color:#d5cff0; }
+    @media (max-width:780px) { .hero { grid-template-columns:1fr; padding-top:33px; }.hero-art { min-height:330px; order:-1; }.hero-logo { width:240px; }.one { right:4%; }.two { left:4%; bottom:12px; }.cards,.journey-grid { grid-template-columns:1fr; }.cards { gap:13px; }.card { min-height:0; }h1 { letter-spacing:-.055em; }.nav-link { padding:10px 12px; }.brand { font-size:1rem; }.foot { align-items:flex-start; flex-direction:column; } }
+  </style>
 </head>
-<body class="font-sans antialiased flex flex-col min-h-screen justify-between">
-
-    <main class="flex-grow flex items-center justify-center px-6 py-20">
-        <div class="max-w-3xl text-center">
-            
-            <div class="mb-8 flex justify-center">
-                <div class="p-4 bg-indigo-950/20 rounded-full flex items-center justify-center shadow-inner border border-indigo-500/10">
-                    <img src="logo.png" alt="Road Cast Logo" class="app-logo">
-                </div>
-            </div>
-
-            <h1 class="text-5xl font-extrabold tracking-tight mb-4 sm:text-6xl bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">
-                Road Cast
-            </h1>
-            
-            <p class="text-lg text-slate-300 mb-8 max-w-xl mx-auto leading-relaxed">
-                Yolculuklarınızı hikayeye dönüştüren, konuma duyarlı akıllı sesli gezi rehberi. Telefonunuzu kenara bırakın, yolun ve tarihin keyfini çıkarın.
-            </p>
-
-            <div class="flex flex-col sm:flex-row justify-center gap-4 mb-12">
-                <a href="#" class="inline-flex items-center justify-center px-6 py-3 border border-slate-700 rounded-xl bg-slate-900/50 hover:bg-slate-800 transition duration-300 gap-3 group">
-                    <span class="text-left">
-                        <span class="block text-xs text-slate-400 uppercase">YAKINDA</span>
-                        <span class="text-sm font-semibold text-white group-hover:text-indigo-400">App Store</span>
-                    </span>
-                </a>
-                
-                <a href="BURAYA_PLAY_STORE_TEST_LINKINI_YAZIN" class="inline-flex items-center justify-center px-6 py-3 border border-indigo-500/30 rounded-xl bg-indigo-600 hover:bg-indigo-700 transition duration-300 gap-3">
-                    <span class="text-left">
-                        <span class="block text-xs text-indigo-200 uppercase">HEMEN İNDİR</span>
-                        <span class="text-sm font-semibold text-white">Google Play</span>
-                    </span>
-                </a>
-            </div>
-        </div>
+<body>
+  <div class="wrap">
+    <nav><a class="brand" href="#ana-sayfa"><img src="logo.png" alt="RoadCast logosu"><span>ROADCAST</span></a><a class="nav-link" href="mailto:info@nextron.com.tr">Bize ulaşın</a></nav>
+    <main id="ana-sayfa">
+      <section class="hero"><div><div class="eyebrow">Konuma duyarlı sesli yol rehberi</div><h1>Yol alırken <em>hikâyeyi</em> dinleyin.</h1><p class="lead">RoadCast, geçtiğiniz yerlerin tarihini, doğasını ve kültürünü doğru anda sesli olarak anlatır. Ekrana değil, yolculuğa odaklanın.</p><div class="actions"><a class="button primary" href="#uygulama">Uygulama yakında</a><a class="button secondary" href="#nasil-calisir">Nasıl çalışır?</a></div></div><div class="hero-art" aria-hidden="true"><div class="floating one">📍 Yakındaki hikâyeler</div><img class="hero-logo" src="logo.png" alt=""><div class="floating two">🎧 Yolculuğa eşlik eder</div></div></section>
+      <section class="features" id="nasil-calisir"><div class="eyebrow">Yolculuğunuzla birlikte</div><h2 class="section-title">Her rota, keşfedilecek yeni bir anlatı.</h2><p class="section-copy">RoadCast, yolculuğa bakışınızı değiştirmek için hazırlanıyor. Ayrıntıları ilk deneyenler öğrenecek.</p><div class="cards"><article class="card"><div class="icon">🗺️</div><h3>Yol sizi çağırır</h3><p>Haritada görünen bir nokta, doğru anda unutulmayacak bir hikâyeye dönüşebilir.</p></article><article class="card"><div class="icon">🎧</div><h3>Dinlemek için yola çıkın</h3><p>Telefonu kenara bırakın. Yolculuk, etrafınızdaki dünyayı anlatmaya başlasın.</p></article><article class="card"><div class="icon">✨</div><h3>Yeni keşifler yakında</h3><p>Seçili rotalar, gizli duraklar ve kişiselleşen bir yol arkadaşlığı sizi bekliyor.</p></article></div></section>
+      <section class="journey" id="uygulama"><div class="journey-grid"><div><div class="eyebrow">Öncelikli erişim</div><h2 class="section-title">RoadCast'i ilk deneyenlerden olun.</h2><p class="section-copy">Yayın tarihi, ilk rotalar ve sınırlı erken erişim davetleri için e-posta listesine katılın.</p><a class="button primary" href="mailto:info@nextron.com.tr?subject=RoadCast%20%C3%B6ncelikli%20eri%C5%9Fim&body=RoadCast%20%C3%B6ncelikli%20eri%C5%9Fim%20listesine%20kat%C4%B1lmak%20istiyorum.">Öncelikli erişime katıl</a></div><div><ul><li>📬 İlk rota duyurularını erken alın</li><li>🧭 Seçili keşiflere ilk siz katılın</li><li>🎧 İlk dinleme deneyimini paylaşın</li><li>✨ RoadCast'in gelişimine yön verin</li></ul><p class="note">E-posta düğmesi sizi doğrudan bize ulaştırır. Kişisel verilerinizi paylaşmaz, yalnızca yayın ve erişim duyuruları için kullanırız.</p></div></div></section>
     </main>
-
-    <footer class="border-t border-slate-800/80 py-8 bg-slate-950/40">
-        <div class="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-4 text-sm text-slate-400">
-            <div>
-                &copy; 2026 Nextron. Tüm hakları saklıdır.
-            </div>
-            <div class="flex gap-6 items-center">
-                <a href="GIST_LINKINI_BURAYA_YAZ" target="_blank" class="hover:text-white transition">Gizlilik Politikası</a>
-                
-                <a href="mailto:info@nextron.com.tr" class="inline-flex items-center gap-2 px-3 py-1 border border-slate-700/50 rounded-full hover:bg-slate-800/50 hover:text-white hover:border-slate-600 transition">
-                    info@nextron.com.tr
-                </a>
-            </div>
-        </div>
-    </footer>
-
+  </div>
+  <footer><div class="wrap foot"><span>© 2026 Nextron. Tüm hakları saklıdır.</span><a href="mailto:info@nextron.com.tr">info@nextron.com.tr</a></div></footer>
 </body>
 </html>
