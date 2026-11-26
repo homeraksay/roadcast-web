@@ -438,6 +438,14 @@
             <input id="city" name="city" list="cityOptions" placeholder="İzmir">
             <datalist id="cityOptions"></datalist>
           </div>
+          <div>
+            <label for="country">Ülke</label>
+            <input id="country" name="country" value="Türkiye">
+          </div>
+          <div>
+            <label for="countryCode">Ülke Kodu</label>
+            <input id="countryCode" name="countryCode" value="TR" maxlength="2" autocorrect="off" autocapitalize="characters" spellcheck="false">
+          </div>
 
           <div>
             <label for="latitude">Enlem <span class="req" aria-hidden="true">*</span></label>
@@ -717,8 +725,9 @@
         const q = await getDocs(collection(db, 'points'));
         points = q.docs.map(d => ({ id: d.id, ...d.data() }));
         points.sort((a, b) => {
-          const tb = b.updatedAt?.toMillis?.() || b.createdAt?.toMillis?.() || 0;
-          const ta = a.updatedAt?.toMillis?.() || a.createdAt?.toMillis?.() || 0;
+          const toMillis = value => value?.toMillis?.() || (typeof value === 'string' ? Date.parse(value) : 0) || 0;
+          const tb = toMillis(b.updatedAt) || toMillis(b.createdAt);
+          const ta = toMillis(a.updatedAt) || toMillis(a.createdAt);
           return tb - ta;
         });
         updateMetrics();
@@ -839,6 +848,8 @@
       $('nameEn').value = name(active, 'en') === active.id ? '' : name(active, 'en');
       $('category').value = active.category || '';
       $('city').value = active.city || active.cityId || active.cityName || '';
+      $('country').value = active.country || 'Türkiye';
+      $('countryCode').value = active.countryCode || 'TR';
       $('latitude').value = active.latitude ?? '';
       $('longitude').value = active.longitude ?? '';
       $('coverFile').value = '';
@@ -877,6 +888,8 @@
       $('nameEn').value = '';
       $('category').value = '';
       $('city').value = '';
+      $('country').value = 'Türkiye';
+      $('countryCode').value = 'TR';
       $('latitude').value = '';
       $('longitude').value = '';
       $('coverFile').value = '';
@@ -964,7 +977,12 @@
           fileName: file.name
         });
         if (res?.data?.imageUrl) {
-          return { imageUrl: res.data.imageUrl, storagePath: res.data.storagePath };
+          return {
+            imageUrl: res.data.imageUrl,
+            storagePath: res.data.storagePath,
+            imageMimeType: res.data.imageMimeType,
+            imageUpdatedAt: res.data.imageUpdatedAt
+          };
         }
       } catch (err) {
         const code = String(err?.code || '');
@@ -990,7 +1008,12 @@
         updatedAt: serverTimestamp()
       });
       const job = await waitForAudioJob(jobRef, 'uploaded');
-      return { imageUrl: job.imageUrl, storagePath: job.storagePath };
+      return {
+        imageUrl: job.imageUrl,
+        storagePath: job.storagePath,
+        imageMimeType: job.imageMimeType,
+        imageUpdatedAt: job.imageUpdatedAt
+      };
     }
 
     async function validateEditorForm({ checkRemoteId = true } = {}) {
@@ -1036,6 +1059,8 @@
         nameEn: $('nameEn').value.trim(),
         category: $('category').value.trim(),
         city: $('city').value.trim(),
+        country: $('country').value.trim() || 'Türkiye',
+        countryCode: $('countryCode').value.trim().toUpperCase() || 'TR',
         latitude: lat,
         longitude: lng,
         tr: $('contentTr').value.trim(),
@@ -1051,7 +1076,10 @@
       const finalCoverUrl = coverResult ? coverResult.imageUrl : fields.coverUrl;
       const finalCoverPath = coverResult
         ? coverResult.storagePath
-        : (existing.imageStoragePath || v(existing, 'image.storagePath') || '');
+        : (existing.image_storage_path || existing.imageStoragePath || v(existing, 'image.storagePath') || '');
+      const finalCoverMimeType = coverResult
+        ? coverResult.imageMimeType
+        : (existing.image_mime_type || '');
 
       const audioUrls = { ...(existing.audio_urls || {}) };
       if (fields.audioTr) audioUrls.tr = fields.audioTr;
@@ -1067,11 +1095,46 @@
       if (fields.en) descriptions.en = fields.en;
       else if (!isCreate) delete descriptions.en;
 
+      const prevCity = existing.city || existing.cityName || '';
+      const computedCityId = slugify(fields.city);
+      const cityId = (!isCreate && existing.cityId && fields.city === prevCity)
+        ? existing.cityId
+        : computedCityId;
+
+      if (isCreate) {
+        const payload = {
+          id: fields.poiId,
+          source: 'admin',
+          tts_status: fields.audioTr ? 'completed' : 'pending',
+          content_status: fields.tr ? 'completed' : 'pending',
+          names: { tr: fields.nameTr, ...(fields.nameEn ? { en: fields.nameEn } : {}) },
+          description: fields.tr,
+          descriptions: { tr: fields.tr, ...(fields.en ? { en: fields.en } : {}) },
+          audio_url: fields.audioTr,
+          audio_urls: { tr: fields.audioTr, ...(fields.audioEn ? { en: fields.audioEn } : {}) },
+          image_url: finalCoverUrl,
+          image_storage_path: finalCoverPath,
+          image_mime_type: finalCoverMimeType || '',
+          latitude: Number(fields.latitude),
+          longitude: Number(fields.longitude),
+          city: fields.city,
+          country: fields.country || 'Türkiye',
+          countryCode: fields.countryCode || 'TR',
+          category: fields.category,
+          updatedAt: new Date().toISOString()
+        };
+        if (coverResult?.imageUpdatedAt) payload.image_updated_at = coverResult.imageUpdatedAt;
+        return payload;
+      }
+
       const payload = {
         names,
         name: fields.nameTr || fields.nameEn,
         category: fields.category,
         city: fields.city,
+        country: fields.country || 'Türkiye',
+        countryCode: fields.countryCode || 'TR',
+        cityId,
         latitude: fields.latitude,
         longitude: fields.longitude,
         content_tr: fields.tr,
@@ -1081,11 +1144,16 @@
         audio_url: fields.audioTr,
         audio_en: fields.audioEn,
         audio_urls: audioUrls,
+        tts_status: fields.audioTr ? 'completed' : 'pending',
+        content_status: fields.tr ? 'completed' : 'pending',
         updatedAt: serverTimestamp()
       };
 
       if (finalCoverUrl) {
         payload.image_url = finalCoverUrl;
+        payload.image_storage_path = finalCoverPath;
+        payload.image_mime_type = finalCoverMimeType || '';
+        if (coverResult?.imageUpdatedAt) payload.image_updated_at = coverResult.imageUpdatedAt;
         payload.imageUrl = finalCoverUrl;
         payload.coverImage = finalCoverUrl;
         if (finalCoverPath) {
@@ -1094,15 +1162,14 @@
         }
       } else if (!isCreate) {
         payload.image_url = '';
+        payload.image_storage_path = '';
+        payload.image_mime_type = '';
         payload.imageUrl = '';
         payload.coverImage = '';
         payload.imageStoragePath = '';
         payload.image = { ...(existing.image || {}), url: '', storagePath: '' };
       }
 
-      if (isCreate) {
-        payload.createdAt = serverTimestamp();
-      }
       return payload;
     }
 
@@ -1129,11 +1196,12 @@
         renderCoverPreview(coverResult.imageUrl, 'Kapak görseli Storage’a yüklendi.');
       }
 
-      const wasNew = isNewMode;
-      const payload = buildPointPayload(fields, { isCreate: wasNew, coverResult });
       const pointRef = doc(db, 'points', fields.poiId);
+      const pointSnapshot = await getDoc(pointRef);
+      const wasNew = isNewMode || !pointSnapshot.exists();
+      const payload = buildPointPayload(fields, { isCreate: wasNew, coverResult });
       if (wasNew) {
-        await setDoc(pointRef, payload);
+        await setDoc(pointRef, payload, { merge: true });
         const localPoint = { id: fields.poiId, ...payload };
         points.unshift(localPoint);
         active = localPoint;
@@ -1157,16 +1225,37 @@
       return { wasNew, coverResult };
     }
 
-    async function publishSinglePreview(lang, preview, text) {
+    function buildPointDataSnapshot(fields) {
+      return buildPointPayload(fields, { isCreate: true, coverResult: null });
+    }
+
+    async function publishSinglePreview(lang, preview, text, fields = null) {
       const btnId = lang === 'en' ? 'publishVoiceEn' : 'publishVoice';
       const urlInputId = lang === 'en' ? 'audioEnUrl' : 'audioTrUrl';
       const audioElId = lang === 'en' ? 'audioPreviewEn' : 'audioPreview';
       const statusId = lang === 'en' ? 'voiceStatusEn' : 'voiceStatus';
 
+      const targetPoiId = active?.id || preview.poiId || $('poiIdInput').value.trim();
+      const pointRef = doc(db, 'points', targetPoiId);
+      const existingSnap = await getDoc(pointRef);
+      let seedFields = fields;
+      if (!existingSnap.exists()) {
+        if (!seedFields) {
+          seedFields = await validateEditorForm({ checkRemoteId: false });
+          if (!seedFields) {
+            throw new Error('Yeni nokta kaydı için zorunlu alanları (POI ID, ad, enlem, boylam) doldurun.');
+          }
+        }
+        isNewMode = true;
+        await persistPointDocument(seedFields);
+      }
+
+      const pointDataForJob = seedFields ? buildPointDataSnapshot(seedFields) : null;
       await updateDoc(preview.jobRef, {
-        poiId: active.id,
+        poiId: targetPoiId,
         lang,
         allowCreate: true,
+        ...(pointDataForJob ? { pointData: pointDataForJob } : {}),
         status: 'publish_requested',
         updatedAt: serverTimestamp()
       });
@@ -1215,7 +1304,7 @@
           const currentText = lang === 'en' ? fields.en : fields.tr;
           if (currentText === preview.text) {
             saveBtn.textContent = `${lang.toUpperCase()} ses yayınlanıyor…`;
-            await publishSinglePreview(lang, preview, currentText);
+            await publishSinglePreview(lang, preview, currentText, fields);
             publishedLangs.push(lang.toUpperCase());
           } else {
             staleLangs.push(lang.toUpperCase());
@@ -1334,7 +1423,7 @@
         if ((isNewMode || pendingCoverFile) && fields) {
           await persistPointDocument(fields);
         }
-        await publishSinglePreview(lang, preview, text);
+        await publishSinglePreview(lang, preview, text, fields);
         updateMetrics();
         render();
         msg(`“${name(active, 'tr')}” için ${isEn ? 'İngilizce' : 'Türkçe'} metin ve Chirp 3 sesi yayınlandı.`);
