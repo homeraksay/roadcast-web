@@ -12,7 +12,8 @@ const VOICES = {
   tr: { languageCode: "tr-TR", name: "tr-TR-Chirp3-HD-Despina", label: "Türkçe" },
   en: { languageCode: "en-US", name: "en-US-Chirp3-HD-Despina", label: "İngilizce" }
 };
-const MAX_TEXT_LENGTH = 5000;
+const MIN_TEXT_LENGTH = 20;
+const TTS_CHUNK_MAX_BYTES = 4200;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const PREVIEW_PREFIX = "admin-audio-previews";
 const IMAGE_MIME_EXTENSIONS = {
@@ -52,8 +53,8 @@ function validateInput(data) {
   const poiId = validatePoiId(data?.poiId);
   const lang = validateLanguage(data?.lang);
   const text = String(data?.text || "").trim();
-  if (text.length < 20 || text.length > MAX_TEXT_LENGTH) {
-    throw new HttpsError("invalid-argument", `${VOICES[lang].label} metin 20-${MAX_TEXT_LENGTH} karakter arasında olmalıdır.`);
+  if (text.length < MIN_TEXT_LENGTH) {
+    throw new HttpsError("invalid-argument", `${VOICES[lang].label} metin en az ${MIN_TEXT_LENGTH} karakter olmalıdır.`);
   }
   return { poiId, lang, text };
 }
@@ -76,6 +77,101 @@ function prepareText(text, lang = "tr") {
     .replace(/[\[\]{}\\_#@$%^&*]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function splitTokenByBytes(token, maxBytes) {
+  const parts = [];
+  let current = "";
+  for (const ch of token) {
+    const next = current + ch;
+    if (Buffer.byteLength(next, "utf8") > maxBytes && current) {
+      parts.push(current);
+      current = ch;
+    } else {
+      current = next;
+    }
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+function splitTextForTts(text, maxBytes = TTS_CHUNK_MAX_BYTES) {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return [text];
+  const segments = text.split(/(?<=[.!?…])\s+/);
+  const chunks = [];
+  let current = "";
+
+  const pushSegment = (segment) => {
+    const candidate = current ? `${current} ${segment}` : segment;
+    if (Buffer.byteLength(candidate, "utf8") <= maxBytes) {
+      current = candidate;
+      return;
+    }
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+    if (Buffer.byteLength(segment, "utf8") <= maxBytes) {
+      current = segment;
+      return;
+    }
+    for (const word of segment.split(/\s+/)) {
+      if (!word) continue;
+      if (Buffer.byteLength(word, "utf8") > maxBytes) {
+        if (current) {
+          chunks.push(current);
+          current = "";
+        }
+        const slices = splitTokenByBytes(word, maxBytes);
+        chunks.push(...slices.slice(0, -1));
+        current = slices[slices.length - 1] || "";
+        continue;
+      }
+      const next = current ? `${current} ${word}` : word;
+      if (Buffer.byteLength(next, "utf8") <= maxBytes) {
+        current = next;
+      } else {
+        if (current) chunks.push(current);
+        current = word;
+      }
+    }
+  };
+
+  for (const segment of segments) {
+    if (segment) pushSegment(segment);
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function stripLeadingId3(buffer) {
+  if (buffer.length > 10 && buffer.subarray(0, 3).toString("ascii") === "ID3") {
+    const size = ((buffer[6] & 0x7f) << 21)
+      | ((buffer[7] & 0x7f) << 14)
+      | ((buffer[8] & 0x7f) << 7)
+      | (buffer[9] & 0x7f);
+    return buffer.subarray(10 + size);
+  }
+  return buffer;
+}
+
+async function synthesizeChirpAudio(text, lang) {
+  const voice = VOICES[lang];
+  const chunks = splitTextForTts(prepareText(text, lang));
+  const audioBuffers = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const [response] = await tts.synthesizeSpeech({
+      input: { text: chunks[i] },
+      voice: { languageCode: voice.languageCode, name: voice.name },
+      audioConfig: { audioEncoding: "MP3" }
+    });
+    if (!response?.audioContent) {
+      throw new Error("TTS boş ses döndürdü.");
+    }
+    const buf = Buffer.from(response.audioContent);
+    audioBuffers.push(i === 0 ? buf : stripLeadingId3(buf));
+  }
+  return Buffer.concat(audioBuffers);
 }
 
 function downloadUrl(bucketName, objectPath, token) {
@@ -177,7 +273,7 @@ exports.uploadPoiCoverImage = onCall({
 
 exports.previewPoiAudio = onCall({
   region: REGION,
-  timeoutSeconds: 120,
+  timeoutSeconds: 300,
   memory: "512MiB",
   cors: true,
   invoker: "public"
@@ -186,24 +282,19 @@ exports.previewPoiAudio = onCall({
   const { poiId, lang, text } = validateInput(request.data);
   const voice = VOICES[lang];
 
-  let response;
+  let audioBuffer;
   try {
-    [response] = await tts.synthesizeSpeech({
-      input: { text: prepareText(text, lang) },
-      voice: { languageCode: voice.languageCode, name: voice.name },
-      audioConfig: { audioEncoding: "MP3" }
-    });
+    audioBuffer = await synthesizeChirpAudio(text, lang);
   } catch (error) {
     console.error("Chirp 3 generation failed", error);
     throw new HttpsError("internal", "Chirp 3 sesi üretilemedi. TTS API ve faturalamayı kontrol edin.");
   }
-  if (!response.audioContent) throw new HttpsError("internal", "TTS boş ses döndürdü.");
 
   const bucket = admin.storage().bucket();
   const previewId = randomUUID();
   const previewPath = `${PREVIEW_PREFIX}/${request.auth.uid}/${previewId}.mp3`;
   const token = randomUUID();
-  await bucket.file(previewPath).save(Buffer.from(response.audioContent), {
+  await bucket.file(previewPath).save(audioBuffer, {
     contentType: "audio/mpeg",
     metadata: {
       metadata: {
@@ -302,16 +393,11 @@ async function generateJobPreview(jobRef, job) {
 
   const { poiId, lang, text } = validateInput(job);
   const voice = VOICES[lang];
-  const [response] = await tts.synthesizeSpeech({
-    input: { text: prepareText(text, lang) },
-    voice: { languageCode: voice.languageCode, name: voice.name },
-    audioConfig: { audioEncoding: "MP3" }
-  });
-  if (!response.audioContent) throw new Error("TTS boş ses döndürdü.");
+  const audioBuffer = await synthesizeChirpAudio(text, lang);
   const bucket = admin.storage().bucket();
   const previewPath = `${PREVIEW_PREFIX}/${job.createdByUid}/${jobRef.id}.mp3`;
   const token = randomUUID();
-  await bucket.file(previewPath).save(Buffer.from(response.audioContent), {
+  await bucket.file(previewPath).save(audioBuffer, {
     contentType: "audio/mpeg",
     metadata: { metadata: { firebaseStorageDownloadTokens: token, poiId, lang, createdBy: job.createdByUid } }
   });
@@ -367,7 +453,7 @@ async function publishJobPreview(jobRef, job) {
 exports.processAdminAudioJob = onDocumentWritten({
   document: "admin_audio_jobs/{jobId}",
   region: REGION,
-  timeoutSeconds: 180,
+  timeoutSeconds: 300,
   memory: "512MiB"
 }, async (event) => {
   if (!event.data?.after.exists) return;

@@ -1094,7 +1094,7 @@
 
     async function waitForAudioJob(jobRef, expectedStatus) {
       const started = Date.now();
-      while (Date.now() - started < 180000) {
+      while (Date.now() - started < 300000) {
         const snapshot = await getDoc(jobRef);
         const job = snapshot.data() || {};
         if (job.status === expectedStatus) return job;
