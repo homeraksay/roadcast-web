@@ -199,36 +199,48 @@ function pathFromAudio(point, bucketName, lang = "tr") {
   return pathFromUrl(url, bucketName);
 }
 
-function buildSeedPointPatch(pointData, poiId) {
+function buildCanonicalPointDoc(pointData, poiId, { audioUpdate, coverUpdate } = {}) {
   if (!pointData || typeof pointData !== "object"
     || !pointData.names || typeof pointData.names.tr !== "string"
     || !Number.isFinite(pointData.latitude) || !Number.isFinite(pointData.longitude)) {
     throw new Error("Yeni POI için tam nokta bilgileri gerekli.");
   }
-  const trAudioUrl = String(pointData.audio_url || pointData.audio_urls?.tr || "");
-  const contentTr = String(pointData.description || pointData.descriptions?.tr || "");
+  const names = {
+    tr: pointData.names.tr,
+    ...(pointData.names.en ? { en: String(pointData.names.en) } : {})
+  };
+  const descriptions = { tr: String(pointData.description || pointData.descriptions?.tr || "") };
+  const audioUrls = { tr: String(pointData.audio_url || pointData.audio_urls?.tr || "") };
+  let description = descriptions.tr;
+  let audioUrl = audioUrls.tr;
+  if (pointData.descriptions?.en) descriptions.en = String(pointData.descriptions.en);
+  if (pointData.audio_urls?.en) audioUrls.en = String(pointData.audio_urls.en);
+  if (audioUpdate?.lang === "tr") {
+    description = audioUpdate.text;
+    descriptions.tr = audioUpdate.text;
+    audioUrl = audioUpdate.audioUrl;
+    audioUrls.tr = audioUpdate.audioUrl;
+  } else if (audioUpdate?.lang === "en") {
+    descriptions.en = audioUpdate.text;
+    audioUrls.en = audioUpdate.audioUrl;
+  }
+
+  const imageUrl = coverUpdate?.imageUrl ?? pointData.image_url ?? "";
+  const imageStoragePath = coverUpdate?.storagePath ?? pointData.image_storage_path ?? "";
+  const imageMimeType = coverUpdate?.imageMimeType ?? pointData.image_mime_type ?? "";
   const seed = {
     id: poiId,
     source: "admin",
-    tts_status: trAudioUrl ? "completed" : "pending",
-    content_status: contentTr ? "completed" : "pending",
-    names: {
-      tr: pointData.names.tr,
-      ...(pointData.names.en ? { en: String(pointData.names.en) } : {})
-    },
-    description: contentTr,
-    descriptions: {
-      tr: contentTr,
-      ...(pointData.descriptions?.en ? { en: String(pointData.descriptions.en) } : {})
-    },
-    audio_url: trAudioUrl,
-    audio_urls: {
-      tr: trAudioUrl,
-      ...(pointData.audio_urls?.en ? { en: String(pointData.audio_urls.en) } : {})
-    },
-    image_url: String(pointData.image_url || ""),
-    image_storage_path: String(pointData.image_storage_path || ""),
-    image_mime_type: String(pointData.image_mime_type || ""),
+    tts_status: audioUrl ? "completed" : "pending",
+    content_status: description ? "completed" : "pending",
+    names,
+    description,
+    descriptions,
+    audio_url: audioUrl,
+    audio_urls: audioUrls,
+    image_url: String(imageUrl),
+    image_storage_path: String(imageStoragePath),
+    image_mime_type: String(imageMimeType),
     latitude: pointData.latitude,
     longitude: pointData.longitude,
     city: String(pointData.city || ""),
@@ -237,7 +249,8 @@ function buildSeedPointPatch(pointData, poiId) {
     category: String(pointData.category || ""),
     updatedAt: new Date().toISOString()
   };
-  if (pointData.image_updated_at) seed.image_updated_at = String(pointData.image_updated_at);
+  const imageUpdatedAt = coverUpdate?.imageUpdatedAt || pointData.image_updated_at;
+  if (imageUpdatedAt) seed.image_updated_at = String(imageUpdatedAt);
   return seed;
 }
 
@@ -395,8 +408,11 @@ exports.publishPoiAudio = onCall({
 
   const pointRef = admin.firestore().collection("points").doc(poiId);
   const snapshot = await pointRef.get();
-  if (!snapshot.exists && !request.data?.allowCreate) {
+  if (!snapshot.exists && !request.data?.allowCreate && !request.data?.pointData) {
     throw new HttpsError("not-found", "POI kaydı bulunamadı.");
+  }
+  if (!snapshot.exists && !request.data?.pointData) {
+    throw new HttpsError("invalid-argument", "Yeni POI için tam nokta bilgileri gerekli.");
   }
 
   const bucket = admin.storage().bucket();
@@ -413,9 +429,9 @@ exports.publishPoiAudio = onCall({
     metadata: { firebaseStorageDownloadTokens: token }
   });
   const audioUrl = downloadUrl(bucket.name, destinationPath, token);
-  const seedPatch = !snapshot.exists ? buildSeedPointPatch(request.data?.pointData, poiId) : {};
-  const audioPatch = buildAudioPointPatch({ ...point, ...seedPatch }, lang, text, audioUrl, destinationPath);
-  const patch = { ...seedPatch, ...audioPatch };
+  const patch = request.data?.pointData
+    ? buildCanonicalPointDoc(request.data.pointData, poiId, { audioUpdate: { lang, text, audioUrl } })
+    : buildAudioPointPatch(point, lang, text, audioUrl, destinationPath);
   await pointRef.set(patch, { merge: true });
   await previewFile.delete({ ignoreNotFound: true });
   return { audioUrl, storagePath: destinationPath, lang };
@@ -445,6 +461,12 @@ async function generateJobPreview(jobRef, job) {
   if (job.type === "cover_image") {
     const payload = parseImagePayload(job);
     const { imageUrl, storagePath, imageMimeType, imageUpdatedAt } = await saveCoverImageToBucket({ ...payload, uid: job.createdByUid });
+    if (job.pointData) {
+      const pointDoc = buildCanonicalPointDoc(job.pointData, payload.poiId, {
+        coverUpdate: { imageUrl, storagePath, imageMimeType, imageUpdatedAt }
+      });
+      await admin.firestore().collection("points").doc(payload.poiId).set(pointDoc, { merge: true });
+    }
     await jobRef.update({
       status: "uploaded",
       imageUrl,
@@ -487,7 +509,7 @@ async function publishJobPreview(jobRef, job) {
   }
   const pointRef = admin.firestore().collection("points").doc(poiId);
   const snapshot = await pointRef.get();
-  if (!snapshot.exists && !job.allowCreate) throw new Error("POI kaydı bulunamadı.");
+  if (!snapshot.exists && !job.allowCreate && !job.pointData) throw new Error("POI kaydı bulunamadı.");
   const bucket = admin.storage().bucket();
   const previewFile = bucket.file(previewPath);
   const [previewExists] = await previewFile.exists();
@@ -501,10 +523,15 @@ async function publishJobPreview(jobRef, job) {
     metadata: { firebaseStorageDownloadTokens: token }
   });
   const audioUrl = downloadUrl(bucket.name, destinationPath, token);
-  const seedPatch = !snapshot.exists ? buildSeedPointPatch(job.pointData, poiId) : {};
-  const audioPatch = buildAudioPointPatch({ ...point, ...seedPatch }, lang, text, audioUrl, destinationPath);
-  const patch = { ...seedPatch, ...audioPatch };
-  await pointRef.set(patch, { merge: true });
+  if (job.pointData) {
+    const pointDoc = buildCanonicalPointDoc(job.pointData, poiId, {
+      audioUpdate: { lang, text, audioUrl }
+    });
+    await pointRef.set(pointDoc, { merge: true });
+  } else {
+    if (!snapshot.exists) throw new Error("Yeni POI için tam nokta bilgileri gerekli.");
+    await pointRef.set(buildAudioPointPatch(point, lang, text, audioUrl, destinationPath), { merge: true });
+  }
   await previewFile.delete({ ignoreNotFound: true });
   await jobRef.update({
     status: "published",

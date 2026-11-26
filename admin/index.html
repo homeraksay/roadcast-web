@@ -596,6 +596,33 @@
       box.classList.remove('hidden');
     }
 
+    function cleanFirestoreData(value) {
+      if (Array.isArray(value)) {
+        return value.map(cleanFirestoreData).filter(item => item !== undefined);
+      }
+      if (!value) return value;
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) return value;
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(([, item]) => item !== undefined)
+          .map(([key, item]) => [key, cleanFirestoreData(item)])
+      );
+    }
+
+    function setDocClean(reference, data, options) {
+      return setDoc(reference, cleanFirestoreData(data), options);
+    }
+
+    function updateDocClean(reference, data) {
+      return updateDoc(reference, cleanFirestoreData(data));
+    }
+
+    function displayError(error) {
+      const message = error?.message || String(error);
+      return error?.code ? `${message} (${error.code})` : message;
+    }
+
     function slugify(input) {
       const trMap = { 'ç': 'c', 'Ç': 'c', 'ğ': 'g', 'Ğ': 'g', 'ı': 'i', 'İ': 'i', 'I': 'i', 'ö': 'o', 'Ö': 'o', 'ş': 's', 'Ş': 's', 'ü': 'u', 'Ü': 'u' };
       return String(input || '')
@@ -955,7 +982,7 @@
       });
     }
 
-    async function uploadCoverImage(poiId, file) {
+    async function uploadCoverImage(poiId, file, pointData) {
       const supportedMimes = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
       const normalizedType = String(file.type || '').toLowerCase();
       let payloadDataUrl;
@@ -996,11 +1023,12 @@
         ? await compressImageForJob(file)
         : { dataUrl: payloadDataUrl, contentType: payloadContentType };
       const jobRef = doc(collection(db, 'admin_audio_jobs'));
-      await setDoc(jobRef, {
+      await setDocClean(jobRef, {
         type: 'cover_image',
         poiId,
         contentType: compressed.contentType,
         imageBase64: compressed.dataUrl,
+        pointData,
         status: 'requested',
         createdByUid: auth.currentUser.uid,
         createdByEmail: auth.currentUser.email,
@@ -1071,7 +1099,42 @@
       };
     }
 
+    function buildCanonicalPointDoc(fields, { coverResult = null, existing = active || {} } = {}) {
+      const imageUrl = coverResult?.imageUrl ?? fields.coverUrl ?? imgUrl(existing) ?? '';
+      const imageStoragePath = coverResult?.storagePath
+        ?? existing.image_storage_path
+        ?? existing.imageStoragePath
+        ?? v(existing, 'image.storagePath')
+        ?? '';
+      const imageMimeType = coverResult?.imageMimeType ?? existing.image_mime_type ?? '';
+      const payload = {
+        id: fields.poiId,
+        source: 'admin',
+        tts_status: fields.audioTr ? 'completed' : 'pending',
+        content_status: fields.tr ? 'completed' : 'pending',
+        names: { tr: fields.nameTr, ...(fields.nameEn ? { en: fields.nameEn } : {}) },
+        description: fields.tr,
+        descriptions: { tr: fields.tr, ...(fields.en ? { en: fields.en } : {}) },
+        audio_url: fields.audioTr,
+        audio_urls: { tr: fields.audioTr, ...(fields.audioEn ? { en: fields.audioEn } : {}) },
+        image_url: imageUrl,
+        image_storage_path: imageStoragePath,
+        image_mime_type: imageMimeType,
+        latitude: Number(fields.latitude),
+        longitude: Number(fields.longitude),
+        city: fields.city,
+        country: fields.country || 'Türkiye',
+        countryCode: fields.countryCode || 'TR',
+        category: fields.category,
+        updatedAt: new Date().toISOString()
+      };
+      const imageUpdatedAt = coverResult?.imageUpdatedAt || existing.image_updated_at;
+      if (imageUpdatedAt) payload.image_updated_at = imageUpdatedAt;
+      return cleanFirestoreData(payload);
+    }
+
     function buildPointPayload(fields, { isCreate, coverResult }) {
+      if (isCreate) return buildCanonicalPointDoc(fields, { coverResult });
       const existing = active || {};
       const finalCoverUrl = coverResult ? coverResult.imageUrl : fields.coverUrl;
       const finalCoverPath = coverResult
@@ -1100,32 +1163,6 @@
       const cityId = (!isCreate && existing.cityId && fields.city === prevCity)
         ? existing.cityId
         : computedCityId;
-
-      if (isCreate) {
-        const payload = {
-          id: fields.poiId,
-          source: 'admin',
-          tts_status: fields.audioTr ? 'completed' : 'pending',
-          content_status: fields.tr ? 'completed' : 'pending',
-          names: { tr: fields.nameTr, ...(fields.nameEn ? { en: fields.nameEn } : {}) },
-          description: fields.tr,
-          descriptions: { tr: fields.tr, ...(fields.en ? { en: fields.en } : {}) },
-          audio_url: fields.audioTr,
-          audio_urls: { tr: fields.audioTr, ...(fields.audioEn ? { en: fields.audioEn } : {}) },
-          image_url: finalCoverUrl,
-          image_storage_path: finalCoverPath,
-          image_mime_type: finalCoverMimeType || '',
-          latitude: Number(fields.latitude),
-          longitude: Number(fields.longitude),
-          city: fields.city,
-          country: fields.country || 'Türkiye',
-          countryCode: fields.countryCode || 'TR',
-          category: fields.category,
-          updatedAt: new Date().toISOString()
-        };
-        if (coverResult?.imageUpdatedAt) payload.image_updated_at = coverResult.imageUpdatedAt;
-        return payload;
-      }
 
       const payload = {
         names,
@@ -1189,7 +1226,11 @@
       let coverResult = null;
       if (pendingCoverFile) {
         $('coverHelp').textContent = 'Kapak görseli Firebase Storage’a yükleniyor…';
-        coverResult = await uploadCoverImage(fields.poiId, pendingCoverFile);
+        coverResult = await uploadCoverImage(
+          fields.poiId,
+          pendingCoverFile,
+          buildCanonicalPointDoc(fields)
+        );
         $('coverUrl').value = coverResult.imageUrl;
         pendingCoverFile = null;
         clearPendingCoverObjectUrl();
@@ -1199,9 +1240,9 @@
       const pointRef = doc(db, 'points', fields.poiId);
       const pointSnapshot = await getDoc(pointRef);
       const wasNew = isNewMode || !pointSnapshot.exists();
-      const payload = buildPointPayload(fields, { isCreate: wasNew, coverResult });
+      const payload = cleanFirestoreData(buildPointPayload(fields, { isCreate: wasNew, coverResult }));
       if (wasNew) {
-        await setDoc(pointRef, payload, { merge: true });
+        await setDocClean(pointRef, payload, { merge: true });
         const localPoint = { id: fields.poiId, ...payload };
         points.unshift(localPoint);
         active = localPoint;
@@ -1214,7 +1255,7 @@
         $('poiIdInput').required = false;
         $('deletePoint').classList.remove('hidden');
       } else {
-        await updateDoc(pointRef, payload);
+        await updateDocClean(pointRef, payload);
         Object.assign(active, payload);
       }
 
@@ -1226,7 +1267,7 @@
     }
 
     function buildPointDataSnapshot(fields) {
-      return buildPointPayload(fields, { isCreate: true, coverResult: null });
+      return buildCanonicalPointDoc(fields);
     }
 
     async function publishSinglePreview(lang, preview, text, fields = null) {
@@ -1251,7 +1292,7 @@
       }
 
       const pointDataForJob = seedFields ? buildPointDataSnapshot(seedFields) : null;
-      await updateDoc(preview.jobRef, {
+      await updateDocClean(preview.jobRef, {
         poiId: targetPoiId,
         lang,
         allowCreate: true,
@@ -1285,7 +1326,14 @@
 
     async function save(event) {
       event.preventDefault();
-      const fields = await validateEditorForm({ checkRemoteId: isNewMode });
+      let fields;
+      try {
+        fields = await validateEditorForm({ checkRemoteId: isNewMode });
+      } catch (e) {
+        console.error('Nokta formu doğrulanamadı', e);
+        setFormError('Nokta doğrulanamadı: ' + displayError(e));
+        return;
+      }
       if (!fields) return;
 
       const saveBtn = $('save');
@@ -1321,9 +1369,11 @@
         if (documentSaved) {
           updateMetrics();
           render();
-          setFormError('Nokta kaydedildi ancak Chirp 3 sesi yayınlanamadı: ' + (e.message || e));
+          console.error('Nokta kaydetme veya ses yayınlama başarısız oldu', e);
+          setFormError('Nokta kaydedildi ancak Chirp 3 sesi yayınlanamadı: ' + displayError(e));
         } else {
-          setFormError('Kaydedilemedi: ' + (e.message || e));
+          console.error('Nokta kaydedilemedi', e);
+          setFormError('Kaydedilemedi: ' + displayError(e));
         }
       } finally {
         saveBtn.disabled = false;
@@ -1364,7 +1414,7 @@
         statusEl.textContent = 'Bu işlem birkaç saniye sürebilir.';
 
         const jobRef = doc(collection(db, 'admin_audio_jobs'));
-        await setDoc(jobRef, {
+        await setDocClean(jobRef, {
           poiId,
           lang,
           text,
@@ -1381,7 +1431,8 @@
         publishBtn.classList.remove('hidden');
         statusEl.textContent = 'Önizleme hazır. Dinledikten sonra yayınlayabilirsin.';
       } catch (e) {
-        statusEl.textContent = 'Ses üretilemedi: ' + (e.message || e);
+        console.error('Ses önizlemesi üretilemedi', e);
+        statusEl.textContent = 'Ses üretilemedi: ' + displayError(e);
       } finally {
         button.disabled = false;
         button.textContent = isEn ? 'Chirp 3 (EN) önizleme oluştur' : 'Chirp 3 önizleme oluştur';
@@ -1403,7 +1454,15 @@
 
       let fields = null;
       if (isNewMode || pendingCoverFile) {
-        fields = await validateEditorForm({ checkRemoteId: isNewMode });
+        try {
+          fields = await validateEditorForm({ checkRemoteId: isNewMode });
+        } catch (e) {
+          console.error('Nokta formu doğrulanamadı', e);
+          const errorMessage = 'Nokta doğrulanamadı: ' + displayError(e);
+          statusEl.textContent = errorMessage;
+          setFormError(errorMessage);
+          return;
+        }
         if (!fields) {
           statusEl.textContent = isNewMode
             ? 'Yeni noktayı yayınlamak için zorunlu alanları (POI ID, ad, enlem, boylam) doldur.'
@@ -1428,7 +1487,9 @@
         render();
         msg(`“${name(active, 'tr')}” için ${isEn ? 'İngilizce' : 'Türkçe'} metin ve Chirp 3 sesi yayınlandı.`);
       } catch (e) {
-        statusEl.textContent = 'Ses yayınlanamadı: ' + (e.message || e);
+        console.error('Ses yayınlanamadı', e);
+        statusEl.textContent = 'Ses yayınlanamadı: ' + displayError(e);
+        setFormError('Ses yayınlanamadı: ' + displayError(e));
       } finally {
         button.disabled = false;
         button.textContent = isEn ? 'EN önizlemeyi yayınla' : 'Önizlemeyi yayınla';
