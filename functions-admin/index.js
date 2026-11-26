@@ -8,10 +8,21 @@ admin.initializeApp();
 
 const ADMIN_EMAIL = "info@nextron.com.tr";
 const REGION = "europe-west1";
-const VOICE_NAME = "tr-TR-Chirp3-HD-Despina";
-const LANGUAGE_CODE = "tr-TR";
+const VOICES = {
+  tr: { languageCode: "tr-TR", name: "tr-TR-Chirp3-HD-Despina", label: "Türkçe" },
+  en: { languageCode: "en-US", name: "en-US-Chirp3-HD-Despina", label: "İngilizce" }
+};
 const MAX_TEXT_LENGTH = 5000;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const PREVIEW_PREFIX = "admin-audio-previews";
+const IMAGE_MIME_EXTENSIONS = {
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "image/avif": "avif"
+};
 const tts = new textToSpeech.TextToSpeechClient();
 
 function assertAdmin(request) {
@@ -21,21 +32,42 @@ function assertAdmin(request) {
   }
 }
 
-function validateInput(data) {
-  const poiId = String(data?.poiId || "").trim();
-  const text = String(data?.text || "").trim();
-  if (!poiId || poiId.includes("/") || poiId.length > 180) {
+function validatePoiId(rawPoiId) {
+  const poiId = String(rawPoiId || "").trim();
+  if (!poiId || poiId === "." || poiId === ".." || poiId.includes("/") || poiId.length > 180) {
     throw new HttpsError("invalid-argument", "POI kimliği geçersiz.");
   }
-  if (text.length < 20 || text.length > MAX_TEXT_LENGTH) {
-    throw new HttpsError("invalid-argument", `Türkçe metin 20-${MAX_TEXT_LENGTH} karakter arasında olmalıdır.`);
-  }
-  return { poiId, text };
+  return poiId;
 }
 
-function prepareText(text) {
-  return text
-    .normalize("NFC")
+function validateLanguage(rawLang) {
+  const lang = String(rawLang || "tr").trim().toLowerCase();
+  if (!VOICES[lang]) {
+    throw new HttpsError("invalid-argument", "Desteklenmeyen ses dili.");
+  }
+  return lang;
+}
+
+function validateInput(data) {
+  const poiId = validatePoiId(data?.poiId);
+  const lang = validateLanguage(data?.lang);
+  const text = String(data?.text || "").trim();
+  if (text.length < 20 || text.length > MAX_TEXT_LENGTH) {
+    throw new HttpsError("invalid-argument", `${VOICES[lang].label} metin 20-${MAX_TEXT_LENGTH} karakter arasında olmalıdır.`);
+  }
+  return { poiId, lang, text };
+}
+
+function prepareText(text, lang = "tr") {
+  const normalized = text.normalize("NFC");
+  if (lang === "en") {
+    return normalized
+      .replace(/[“”„«»"]/g, "")
+      .replace(/[\[\]{}\\_#@$%^&*]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return normalized
     .replace(/\byirmi bin (?=(?:[a-zçğıöşü]+\s+){1,3}yıl(?:ında|ında|ı|a)?\b)/giu, "iki bin ")
     .replace(/\bM\.Ö\.|\bMÖ\b/giu, "Milattan önce")
     .replace(/\bM\.S\.|\bMS\b/giu, "Milattan sonra")
@@ -50,10 +82,7 @@ function downloadUrl(bucketName, objectPath, token) {
   return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(objectPath)}?alt=media&token=${token}`;
 }
 
-function pathFromAudio(point, bucketName) {
-  const direct = point?.audio?.tr?.storagePath;
-  if (direct) return String(direct);
-  const url = point?.audio_urls?.tr || point?.audio_url || point?.dbAudioURL;
+function pathFromUrl(url, bucketName) {
   if (!url) return null;
   try {
     const parsed = new URL(String(url));
@@ -65,24 +94,103 @@ function pathFromAudio(point, bucketName) {
   }
 }
 
+function pathFromAudio(point, bucketName, lang = "tr") {
+  const direct = point?.audio?.[lang]?.storagePath;
+  if (direct) return String(direct);
+  const url = lang === "en"
+    ? (point?.audio_urls?.en || point?.audio_en)
+    : (point?.audio_urls?.tr || point?.audio_url || point?.dbAudioURL);
+  return pathFromUrl(url, bucketName);
+}
+
+function buildAudioPointPatch(point, lang, text, audioUrl, destinationPath) {
+  const basePatch = {
+    audio_urls: { ...(point.audio_urls || {}), [lang]: audioUrl },
+    descriptions: { ...(point.descriptions || {}), [lang]: text },
+    audio: {
+      ...(point.audio || {}),
+      [lang]: {
+        ...(point.audio?.[lang] || {}),
+        storagePath: destinationPath,
+        version: Number(point.audio?.[lang]?.version || 0) + 1
+      }
+    },
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  };
+  if (lang === "en") {
+    return { ...basePatch, content_en: text, audio_en: audioUrl };
+  }
+  return { ...basePatch, description: text, content_tr: text, audio_url: audioUrl };
+}
+
+function parseImagePayload(data) {
+  const poiId = validatePoiId(data?.poiId);
+  let contentType = String(data?.contentType || "").trim().toLowerCase();
+  let rawBase64 = String(data?.dataUrl || data?.imageBase64 || "").trim();
+  const dataUrlMatch = rawBase64.match(/^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/i);
+  if (dataUrlMatch) {
+    contentType = contentType || dataUrlMatch[1].toLowerCase();
+    rawBase64 = dataUrlMatch[2];
+  }
+  const ext = IMAGE_MIME_EXTENSIONS[contentType];
+  if (!ext) {
+    throw new HttpsError("invalid-argument", "Desteklenen görsel formatları: JPG, PNG, WEBP, GIF veya AVIF.");
+  }
+  const buffer = Buffer.from(rawBase64, "base64");
+  if (!buffer.length || buffer.length > MAX_IMAGE_BYTES) {
+    throw new HttpsError("invalid-argument", "Kapak görseli boş olamaz ve en fazla 8 MB olmalıdır.");
+  }
+  return { poiId, contentType, ext, buffer };
+}
+
+async function saveCoverImageToBucket({ poiId, contentType, ext, buffer, uid }) {
+  const bucket = admin.storage().bucket();
+  const storagePath = `images/${poiId}.${ext}`;
+  const token = randomUUID();
+  await bucket.file(storagePath).save(buffer, {
+    contentType,
+    metadata: {
+      metadata: {
+        firebaseStorageDownloadTokens: token,
+        poiId,
+        createdBy: uid
+      }
+    }
+  });
+  return {
+    storagePath,
+    imageUrl: downloadUrl(bucket.name, storagePath, token)
+  };
+}
+
+exports.uploadPoiCoverImage = onCall({
+  region: REGION,
+  timeoutSeconds: 60,
+  memory: "512MiB",
+  cors: true,
+  invoker: "public"
+}, async (request) => {
+  assertAdmin(request);
+  const payload = parseImagePayload(request.data);
+  return saveCoverImageToBucket({ ...payload, uid: request.auth.uid });
+});
+
 exports.previewPoiAudio = onCall({
   region: REGION,
   timeoutSeconds: 120,
   memory: "512MiB",
+  cors: true,
   invoker: "public"
 }, async (request) => {
   assertAdmin(request);
-  const { poiId, text } = validateInput(request.data);
-  const pointRef = admin.firestore().collection("points").doc(poiId);
-  if (!(await pointRef.get()).exists) {
-    throw new HttpsError("not-found", "POI kaydı bulunamadı.");
-  }
+  const { poiId, lang, text } = validateInput(request.data);
+  const voice = VOICES[lang];
 
   let response;
   try {
     [response] = await tts.synthesizeSpeech({
-      input: { text: prepareText(text) },
-      voice: { languageCode: LANGUAGE_CODE, name: VOICE_NAME },
+      input: { text: prepareText(text, lang) },
+      voice: { languageCode: voice.languageCode, name: voice.name },
       audioConfig: { audioEncoding: "MP3" }
     });
   } catch (error) {
@@ -101,6 +209,7 @@ exports.previewPoiAudio = onCall({
       metadata: {
         firebaseStorageDownloadTokens: token,
         poiId,
+        lang,
         createdBy: request.auth.uid
       }
     }
@@ -108,7 +217,8 @@ exports.previewPoiAudio = onCall({
   return {
     previewPath,
     previewUrl: downloadUrl(bucket.name, previewPath, token),
-    voice: VOICE_NAME
+    voice: voice.name,
+    lang
   };
 });
 
@@ -116,10 +226,11 @@ exports.publishPoiAudio = onCall({
   region: REGION,
   timeoutSeconds: 120,
   memory: "512MiB",
+  cors: true,
   invoker: "public"
 }, async (request) => {
   assertAdmin(request);
-  const { poiId, text } = validateInput(request.data);
+  const { poiId, lang, text } = validateInput(request.data);
   const previewPath = String(request.data?.previewPath || "").trim();
   const expectedPrefix = `${PREVIEW_PREFIX}/${request.auth.uid}/`;
   if (!previewPath.startsWith(expectedPrefix) || !previewPath.endsWith(".mp3")) {
@@ -128,7 +239,9 @@ exports.publishPoiAudio = onCall({
 
   const pointRef = admin.firestore().collection("points").doc(poiId);
   const snapshot = await pointRef.get();
-  if (!snapshot.exists) throw new HttpsError("not-found", "POI kaydı bulunamadı.");
+  if (!snapshot.exists && !request.data?.allowCreate) {
+    throw new HttpsError("not-found", "POI kaydı bulunamadı.");
+  }
 
   const bucket = admin.storage().bucket();
   const previewFile = bucket.file(previewPath);
@@ -136,7 +249,7 @@ exports.publishPoiAudio = onCall({
   if (!previewExists) throw new HttpsError("not-found", "Önizleme süresi dolmuş veya dosya bulunamadı.");
 
   const point = snapshot.data() || {};
-  const destinationPath = pathFromAudio(point, bucket.name) || `audio/tr/${poiId}_admin.mp3`;
+  const destinationPath = pathFromAudio(point, bucket.name, lang) || `audio/${lang}/${poiId}_admin.mp3`;
   const token = randomUUID();
   await previewFile.copy(bucket.file(destinationPath));
   await bucket.file(destinationPath).setMetadata({
@@ -144,20 +257,13 @@ exports.publishPoiAudio = onCall({
     metadata: { firebaseStorageDownloadTokens: token }
   });
   const audioUrl = downloadUrl(bucket.name, destinationPath, token);
-  await pointRef.set({
-    description: text,
-    content_tr: text,
-    descriptions: { ...(point.descriptions || {}), tr: text },
-    audio_url: audioUrl,
-    audio_urls: { ...(point.audio_urls || {}), tr: audioUrl },
-    audio: {
-      ...(point.audio || {}),
-      tr: { ...(point.audio?.tr || {}), storagePath: destinationPath, version: Number(point.audio?.tr?.version || 0) + 1 }
-    },
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
-  }, { merge: true });
+  const patch = buildAudioPointPatch(point, lang, text, audioUrl, destinationPath);
+  if (!snapshot.exists) {
+    patch.createdAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+  await pointRef.set(patch, { merge: true });
   await previewFile.delete({ ignoreNotFound: true });
-  return { audioUrl, storagePath: destinationPath };
+  return { audioUrl, storagePath: destinationPath, lang };
 });
 
 async function claimJob(jobRef, expectedStatus) {
@@ -173,16 +279,32 @@ async function claimJob(jobRef, expectedStatus) {
   });
 }
 
-async function generateJobPreview(jobRef, job) {
-  const { poiId, text } = validateInput(job);
+function assertJobAdmin(job) {
   if (String(job.createdByEmail || "").toLowerCase() !== ADMIN_EMAIL || !job.createdByUid) {
     throw new Error("Yönetici kimliği doğrulanamadı.");
   }
-  const pointRef = admin.firestore().collection("points").doc(poiId);
-  if (!(await pointRef.get()).exists) throw new Error("POI kaydı bulunamadı.");
+}
+
+async function generateJobPreview(jobRef, job) {
+  assertJobAdmin(job);
+  if (job.type === "cover_image") {
+    const payload = parseImagePayload(job);
+    const { imageUrl, storagePath } = await saveCoverImageToBucket({ ...payload, uid: job.createdByUid });
+    await jobRef.update({
+      status: "uploaded",
+      imageUrl,
+      storagePath,
+      imageBase64: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    return;
+  }
+
+  const { poiId, lang, text } = validateInput(job);
+  const voice = VOICES[lang];
   const [response] = await tts.synthesizeSpeech({
-    input: { text: prepareText(text) },
-    voice: { languageCode: LANGUAGE_CODE, name: VOICE_NAME },
+    input: { text: prepareText(text, lang) },
+    voice: { languageCode: voice.languageCode, name: voice.name },
     audioConfig: { audioEncoding: "MP3" }
   });
   if (!response.audioContent) throw new Error("TTS boş ses döndürdü.");
@@ -191,19 +313,21 @@ async function generateJobPreview(jobRef, job) {
   const token = randomUUID();
   await bucket.file(previewPath).save(Buffer.from(response.audioContent), {
     contentType: "audio/mpeg",
-    metadata: { metadata: { firebaseStorageDownloadTokens: token, poiId, createdBy: job.createdByUid } }
+    metadata: { metadata: { firebaseStorageDownloadTokens: token, poiId, lang, createdBy: job.createdByUid } }
   });
   await jobRef.update({
     status: "preview_ready",
     previewPath,
     previewUrl: downloadUrl(bucket.name, previewPath, token),
-    voice: VOICE_NAME,
+    voice: voice.name,
+    lang,
     updatedAt: admin.firestore.FieldValue.serverTimestamp()
   });
 }
 
 async function publishJobPreview(jobRef, job) {
-  const { poiId, text } = validateInput(job);
+  assertJobAdmin(job);
+  const { poiId, lang, text } = validateInput(job);
   const expectedPrefix = `${PREVIEW_PREFIX}/${job.createdByUid}/`;
   const previewPath = String(job.previewPath || "");
   if (!previewPath.startsWith(expectedPrefix) || !previewPath.endsWith(".mp3")) {
@@ -211,13 +335,13 @@ async function publishJobPreview(jobRef, job) {
   }
   const pointRef = admin.firestore().collection("points").doc(poiId);
   const snapshot = await pointRef.get();
-  if (!snapshot.exists) throw new Error("POI kaydı bulunamadı.");
+  if (!snapshot.exists && !job.allowCreate) throw new Error("POI kaydı bulunamadı.");
   const bucket = admin.storage().bucket();
   const previewFile = bucket.file(previewPath);
   const [previewExists] = await previewFile.exists();
   if (!previewExists) throw new Error("Önizleme dosyası bulunamadı.");
   const point = snapshot.data() || {};
-  const destinationPath = pathFromAudio(point, bucket.name) || `audio/tr/${poiId}_admin.mp3`;
+  const destinationPath = pathFromAudio(point, bucket.name, lang) || `audio/${lang}/${poiId}_admin.mp3`;
   const token = randomUUID();
   await previewFile.copy(bucket.file(destinationPath));
   await bucket.file(destinationPath).setMetadata({
@@ -225,23 +349,17 @@ async function publishJobPreview(jobRef, job) {
     metadata: { firebaseStorageDownloadTokens: token }
   });
   const audioUrl = downloadUrl(bucket.name, destinationPath, token);
-  await pointRef.set({
-    description: text,
-    content_tr: text,
-    descriptions: { ...(point.descriptions || {}), tr: text },
-    audio_url: audioUrl,
-    audio_urls: { ...(point.audio_urls || {}), tr: audioUrl },
-    audio: {
-      ...(point.audio || {}),
-      tr: { ...(point.audio?.tr || {}), storagePath: destinationPath, version: Number(point.audio?.tr?.version || 0) + 1 }
-    },
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
-  }, { merge: true });
+  const patch = buildAudioPointPatch(point, lang, text, audioUrl, destinationPath);
+  if (!snapshot.exists) {
+    patch.createdAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+  await pointRef.set(patch, { merge: true });
   await previewFile.delete({ ignoreNotFound: true });
   await jobRef.update({
     status: "published",
     audioUrl,
     storagePath: destinationPath,
+    lang,
     updatedAt: admin.firestore.FieldValue.serverTimestamp()
   });
 }
@@ -265,6 +383,7 @@ exports.processAdminAudioJob = onDocumentWritten({
     console.error("Admin audio job failed", error);
     await jobRef.update({
       status: "error",
+      imageBase64: admin.firestore.FieldValue.delete(),
       errorMessage: String(error?.message || error).slice(0, 500),
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
