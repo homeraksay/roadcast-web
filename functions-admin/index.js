@@ -199,22 +199,24 @@ function pathFromAudio(point, bucketName, lang = "tr") {
   return pathFromUrl(url, bucketName);
 }
 
-function buildCanonicalPointDoc(pointData, poiId, { audioUpdate, coverUpdate } = {}) {
-  if (!pointData || typeof pointData !== "object"
-    || !pointData.names || typeof pointData.names.tr !== "string"
-    || !Number.isFinite(pointData.latitude) || !Number.isFinite(pointData.longitude)) {
-    throw new Error("Yeni POI için tam nokta bilgileri gerekli.");
-  }
-  const names = {
-    tr: pointData.names.tr,
-    ...(pointData.names.en ? { en: String(pointData.names.en) } : {})
+function buildCanonicalPointDoc(pointData, poiId, { audioUpdate, coverUpdate, existingPoint } = {}) {
+  const source = {
+    ...(existingPoint || {}),
+    ...(pointData && typeof pointData === "object" ? pointData : {})
   };
-  const descriptions = { tr: String(pointData.description || pointData.descriptions?.tr || "") };
-  const audioUrls = { tr: String(pointData.audio_url || pointData.audio_urls?.tr || "") };
+  const namesSource = source.names || {};
+  const names = {
+    tr: String(namesSource.tr || source.name || poiId),
+    ...(namesSource.en ? { en: String(namesSource.en) } : {})
+  };
+  const descriptions = { tr: String(source.description || source.descriptions?.tr || source.content_tr || "") };
+  const audioUrls = { tr: String(source.audio_url || source.audio_urls?.tr || "") };
   let description = descriptions.tr;
   let audioUrl = audioUrls.tr;
-  if (pointData.descriptions?.en) descriptions.en = String(pointData.descriptions.en);
-  if (pointData.audio_urls?.en) audioUrls.en = String(pointData.audio_urls.en);
+  const descriptionEn = source.descriptions?.en || source.content_en;
+  const audioUrlEn = source.audio_urls?.en || source.audio_en;
+  if (descriptionEn) descriptions.en = String(descriptionEn);
+  if (audioUrlEn) audioUrls.en = String(audioUrlEn);
   if (audioUpdate?.lang === "tr") {
     description = audioUpdate.text;
     descriptions.tr = audioUpdate.text;
@@ -225,9 +227,11 @@ function buildCanonicalPointDoc(pointData, poiId, { audioUpdate, coverUpdate } =
     audioUrls.en = audioUpdate.audioUrl;
   }
 
-  const imageUrl = coverUpdate?.imageUrl ?? pointData.image_url ?? "";
-  const imageStoragePath = coverUpdate?.storagePath ?? pointData.image_storage_path ?? "";
-  const imageMimeType = coverUpdate?.imageMimeType ?? pointData.image_mime_type ?? "";
+  const imageUrl = coverUpdate?.imageUrl ?? source.image_url ?? source.imageUrl ?? source.coverImage ?? source.image?.url ?? "";
+  const imageStoragePath = coverUpdate?.storagePath ?? source.image_storage_path ?? source.imageStoragePath ?? source.image?.storagePath ?? "";
+  const imageMimeType = coverUpdate?.imageMimeType ?? source.image_mime_type ?? "";
+  const latitude = Number(source.latitude);
+  const longitude = Number(source.longitude);
   const seed = {
     id: poiId,
     source: "admin",
@@ -241,15 +245,15 @@ function buildCanonicalPointDoc(pointData, poiId, { audioUpdate, coverUpdate } =
     image_url: String(imageUrl),
     image_storage_path: String(imageStoragePath),
     image_mime_type: String(imageMimeType),
-    latitude: pointData.latitude,
-    longitude: pointData.longitude,
-    city: String(pointData.city || ""),
-    country: String(pointData.country || "Türkiye"),
-    countryCode: String(pointData.countryCode || "TR"),
-    category: String(pointData.category || ""),
+    latitude: Number.isFinite(latitude) ? latitude : 0,
+    longitude: Number.isFinite(longitude) ? longitude : 0,
+    city: String(source.city || source.cityName || source.cityId || ""),
+    country: String(source.country || "Türkiye"),
+    countryCode: String(source.countryCode || "TR"),
+    category: String(source.category || ""),
     updatedAt: new Date().toISOString()
   };
-  const imageUpdatedAt = coverUpdate?.imageUpdatedAt || pointData.image_updated_at;
+  const imageUpdatedAt = coverUpdate?.imageUpdatedAt || source.image_updated_at;
   if (imageUpdatedAt) seed.image_updated_at = String(imageUpdatedAt);
   return seed;
 }
@@ -461,12 +465,13 @@ async function generateJobPreview(jobRef, job) {
   if (job.type === "cover_image") {
     const payload = parseImagePayload(job);
     const { imageUrl, storagePath, imageMimeType, imageUpdatedAt } = await saveCoverImageToBucket({ ...payload, uid: job.createdByUid });
-    if (job.pointData) {
-      const pointDoc = buildCanonicalPointDoc(job.pointData, payload.poiId, {
-        coverUpdate: { imageUrl, storagePath, imageMimeType, imageUpdatedAt }
-      });
-      await admin.firestore().collection("points").doc(payload.poiId).set(pointDoc, { merge: true });
-    }
+    const pointRef = admin.firestore().collection("points").doc(payload.poiId);
+    const pointSnapshot = await pointRef.get();
+    const pointDoc = buildCanonicalPointDoc(job.pointData, payload.poiId, {
+      existingPoint: pointSnapshot.data(),
+      coverUpdate: { imageUrl, storagePath, imageMimeType, imageUpdatedAt }
+    });
+    await pointRef.set(pointDoc, { merge: true });
     await jobRef.update({
       status: "uploaded",
       imageUrl,
@@ -509,7 +514,6 @@ async function publishJobPreview(jobRef, job) {
   }
   const pointRef = admin.firestore().collection("points").doc(poiId);
   const snapshot = await pointRef.get();
-  if (!snapshot.exists && !job.allowCreate && !job.pointData) throw new Error("POI kaydı bulunamadı.");
   const bucket = admin.storage().bucket();
   const previewFile = bucket.file(previewPath);
   const [previewExists] = await previewFile.exists();
@@ -523,15 +527,11 @@ async function publishJobPreview(jobRef, job) {
     metadata: { firebaseStorageDownloadTokens: token }
   });
   const audioUrl = downloadUrl(bucket.name, destinationPath, token);
-  if (job.pointData) {
-    const pointDoc = buildCanonicalPointDoc(job.pointData, poiId, {
-      audioUpdate: { lang, text, audioUrl }
-    });
-    await pointRef.set(pointDoc, { merge: true });
-  } else {
-    if (!snapshot.exists) throw new Error("Yeni POI için tam nokta bilgileri gerekli.");
-    await pointRef.set(buildAudioPointPatch(point, lang, text, audioUrl, destinationPath), { merge: true });
-  }
+  const pointDoc = buildCanonicalPointDoc(job.pointData, poiId, {
+    existingPoint: point,
+    audioUpdate: { lang, text, audioUrl }
+  });
+  await pointRef.set(pointDoc, { merge: true });
   await previewFile.delete({ ignoreNotFound: true });
   await jobRef.update({
     status: "published",

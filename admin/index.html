@@ -712,7 +712,10 @@
             return false;
           }
         } catch (err) {
-          console.warn('POI ID uzak kontrolü yapılamadı:', err);
+          const errorMessage = 'POI ID Firestore’da doğrulanamadı: ' + displayError(err);
+          updatePoiIdHint('error', errorMessage);
+          setFormError(errorMessage);
+          return false;
         }
       }
       updatePoiIdHint('ok', `Kullanılabilir POI ID: ${raw}`);
@@ -1280,23 +1283,24 @@
       const pointRef = doc(db, 'points', targetPoiId);
       const existingSnap = await getDoc(pointRef);
       let seedFields = fields;
-      if (!existingSnap.exists()) {
+      if (!seedFields) {
+        seedFields = await validateEditorForm({ checkRemoteId: !active });
         if (!seedFields) {
-          seedFields = await validateEditorForm({ checkRemoteId: false });
-          if (!seedFields) {
-            throw new Error('Yeni nokta kaydı için zorunlu alanları (POI ID, ad, enlem, boylam) doldurun.');
-          }
+          throw new Error('Yayın için güncel POI ID, ad ve koordinat bilgileri gerekli.');
         }
+      }
+      seedFields = { ...seedFields, poiId: targetPoiId };
+      if (!existingSnap.exists()) {
         isNewMode = true;
         await persistPointDocument(seedFields);
       }
 
-      const pointDataForJob = seedFields ? buildPointDataSnapshot(seedFields) : null;
+      const pointDataForJob = buildPointDataSnapshot(seedFields);
       await updateDocClean(preview.jobRef, {
         poiId: targetPoiId,
         lang,
         allowCreate: true,
-        ...(pointDataForJob ? { pointData: pointDataForJob } : {}),
+        pointData: pointDataForJob,
         status: 'publish_requested',
         updatedAt: serverTimestamp()
       });
@@ -1383,26 +1387,31 @@
 
     async function createVoicePreview(lang) {
       const isEn = lang === 'en';
-      const text = $(isEn ? 'contentEn' : 'contentTr').value.trim();
       const button = $(isEn ? 'createVoiceEn' : 'createVoice');
       const publishBtn = $(isEn ? 'publishVoiceEn' : 'publishVoice');
       const statusEl = $(isEn ? 'voiceStatusEn' : 'voiceStatus');
       const audioEl = $(isEn ? 'audioPreviewEn' : 'audioPreview');
-
-      let poiId = active?.id || '';
-      if (isNewMode) {
-        const idOk = await validatePoiIdField({ checkRemote: true });
-        if (!idOk) {
-          $('poiIdInput').focus();
-          statusEl.textContent = 'Önce geçerli ve benzersiz bir POI ID belirle.';
-          return;
-        }
-        poiId = $('poiIdInput').value.trim();
+      let fields;
+      try {
+        fields = await validateEditorForm({ checkRemoteId: isNewMode });
+      } catch (e) {
+        console.error('Nokta formu doğrulanamadı', e);
+        const errorMessage = 'Nokta doğrulanamadı: ' + displayError(e);
+        statusEl.textContent = errorMessage;
+        setFormError(errorMessage);
+        return;
       }
-      if (!poiId) return;
+      if (!fields) {
+        statusEl.textContent = 'Önce POI ID, Türkçe ad ve geçerli koordinatları tamamla.';
+        return;
+      }
+      const { poiId } = fields;
+      const text = isEn ? fields.en : fields.tr;
 
       if (text.length < 20) {
-        statusEl.textContent = `Önce en az 20 karakter ${isEn ? 'İngilizce' : 'Türkçe'} hikâye metnini gir.`;
+        const errorMessage = `Önce en az 20 karakter ${isEn ? 'İngilizce' : 'Türkçe'} hikâye metnini gir.`;
+        statusEl.textContent = errorMessage;
+        setFormError(errorMessage);
         return;
       }
 
@@ -1418,6 +1427,7 @@
           poiId,
           lang,
           text,
+          pointData: buildPointDataSnapshot(fields),
           status: 'requested',
           createdByUid: auth.currentUser.uid,
           createdByEmail: auth.currentUser.email,
@@ -1448,27 +1458,25 @@
       const button = $(isEn ? 'publishVoiceEn' : 'publishVoice');
 
       if (text !== preview.text) {
-        statusEl.textContent = 'Metin önizlemeden sonra değişti. Yeniden önizleme oluştur.';
+        const errorMessage = 'Metin önizlemeden sonra değişti. Yeniden önizleme oluştur.';
+        statusEl.textContent = errorMessage;
+        setFormError(errorMessage);
         return;
       }
 
       let fields = null;
-      if (isNewMode || pendingCoverFile) {
-        try {
-          fields = await validateEditorForm({ checkRemoteId: isNewMode });
-        } catch (e) {
-          console.error('Nokta formu doğrulanamadı', e);
-          const errorMessage = 'Nokta doğrulanamadı: ' + displayError(e);
-          statusEl.textContent = errorMessage;
-          setFormError(errorMessage);
-          return;
-        }
-        if (!fields) {
-          statusEl.textContent = isNewMode
-            ? 'Yeni noktayı yayınlamak için zorunlu alanları (POI ID, ad, enlem, boylam) doldur.'
-            : 'Seçili kapak görseliyle yayınlamak için zorunlu alanları kontrol et.';
-          return;
-        }
+      try {
+        fields = await validateEditorForm({ checkRemoteId: isNewMode });
+      } catch (e) {
+        console.error('Nokta formu doğrulanamadı', e);
+        const errorMessage = 'Nokta doğrulanamadı: ' + displayError(e);
+        statusEl.textContent = errorMessage;
+        setFormError(errorMessage);
+        return;
+      }
+      if (!fields) {
+        statusEl.textContent = 'Yayınlamak için POI ID, Türkçe ad ve geçerli koordinatları tamamla.';
+        return;
       }
       if (isNewMode) {
         if (!confirm(`Dinlediğin ${isEn ? 'İngilizce' : 'Türkçe'} Chirp 3 önizlemesi yayınlansın ve yeni nokta kataloğa kaydedilsin mi?`)) return;
