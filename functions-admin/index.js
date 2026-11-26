@@ -221,11 +221,20 @@ function buildAudioPointPatch(point, lang, text, audioUrl, destinationPath) {
 
 function parseImagePayload(data) {
   const poiId = validatePoiId(data?.poiId);
-  let contentType = String(data?.contentType || "").trim().toLowerCase();
+  const normalizeMime = (mime) => {
+    const m = String(mime || "").trim().toLowerCase();
+    if (m === "image/pjpeg") return "image/jpeg";
+    if (m === "image/x-png") return "image/png";
+    return m;
+  };
+  let contentType = normalizeMime(data?.contentType);
   let rawBase64 = String(data?.dataUrl || data?.imageBase64 || "").trim();
   const dataUrlMatch = rawBase64.match(/^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/i);
   if (dataUrlMatch) {
-    contentType = contentType || dataUrlMatch[1].toLowerCase();
+    const dataUrlMime = normalizeMime(dataUrlMatch[1]);
+    if (!IMAGE_MIME_EXTENSIONS[contentType]) {
+      contentType = dataUrlMime;
+    }
     rawBase64 = dataUrlMatch[2];
   }
   const ext = IMAGE_MIME_EXTENSIONS[contentType];

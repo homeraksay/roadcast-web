@@ -943,12 +943,24 @@
     }
 
     async function uploadCoverImage(poiId, file) {
-      const dataUrl = await readFileAsDataUrl(file);
+      const supportedMimes = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
+      const normalizedType = String(file.type || '').toLowerCase();
+      let payloadDataUrl;
+      let payloadContentType;
+      if (supportedMimes.has(normalizedType)) {
+        payloadDataUrl = await readFileAsDataUrl(file);
+        payloadContentType = normalizedType;
+      } else {
+        const converted = await compressImageForJob(file);
+        payloadDataUrl = converted.dataUrl;
+        payloadContentType = converted.contentType;
+      }
+
       try {
         const res = await uploadCoverCallable({
           poiId,
-          dataUrl,
-          contentType: file.type || 'image/jpeg',
+          dataUrl: payloadDataUrl,
+          contentType: payloadContentType,
           fileName: file.name
         });
         if (res?.data?.imageUrl) {
@@ -962,7 +974,9 @@
         console.warn('uploadPoiCoverImage callable fallback devreye giriyor:', err);
       }
 
-      const compressed = dataUrl.length > 720000 ? await compressImageForJob(file) : { dataUrl, contentType: file.type || 'image/jpeg' };
+      const compressed = payloadDataUrl.length > 720000
+        ? await compressImageForJob(file)
+        : { dataUrl: payloadDataUrl, contentType: payloadContentType };
       const jobRef = doc(collection(db, 'admin_audio_jobs'));
       await setDoc(jobRef, {
         type: 'cover_image',
@@ -1045,12 +1059,16 @@
       if (fields.audioEn) audioUrls.en = fields.audioEn;
       else if (!isCreate) delete audioUrls.en;
 
+      const names = { ...(existing.names || {}), tr: fields.nameTr };
+      if (fields.nameEn) names.en = fields.nameEn;
+      else if (!isCreate) delete names.en;
+
+      const descriptions = { ...(existing.descriptions || {}), tr: fields.tr };
+      if (fields.en) descriptions.en = fields.en;
+      else if (!isCreate) delete descriptions.en;
+
       const payload = {
-        names: {
-          ...(existing.names || {}),
-          tr: fields.nameTr,
-          en: fields.nameEn
-        },
+        names,
         name: fields.nameTr || fields.nameEn,
         category: fields.category,
         city: fields.city,
@@ -1059,11 +1077,7 @@
         content_tr: fields.tr,
         description: fields.tr,
         content_en: fields.en,
-        descriptions: {
-          ...(existing.descriptions || {}),
-          tr: fields.tr,
-          en: fields.en
-        },
+        descriptions,
         audio_url: fields.audioTr,
         audio_en: fields.audioEn,
         audio_urls: audioUrls,
@@ -1152,6 +1166,7 @@
       await updateDoc(preview.jobRef, {
         poiId: active.id,
         lang,
+        allowCreate: true,
         status: 'publish_requested',
         updatedAt: serverTimestamp()
       });
@@ -1185,10 +1200,12 @@
       if (!fields) return;
 
       const saveBtn = $('save');
+      let documentSaved = false;
       try {
         saveBtn.disabled = true;
         saveBtn.textContent = 'Kaydediliyor…';
         const { wasNew } = await persistPointDocument(fields);
+        documentSaved = true;
 
         const publishedLangs = [];
         const staleLangs = [];
@@ -1212,7 +1229,13 @@
         const staleNote = staleLangs.length ? ` Not: ${staleLangs.join(', ')} metni önizlemeden sonra değiştiği için eski ses önizlemesi yayınlanmadı.` : '';
         msg((wasNew ? `“${fields.nameTr}” yeni nokta olarak eklendi.` : `“${fields.nameTr}” güncellendi.`) + extra + staleNote);
       } catch (e) {
-        setFormError('Kaydedilemedi: ' + (e.message || e));
+        if (documentSaved) {
+          updateMetrics();
+          render();
+          setFormError('Nokta kaydedildi ancak Chirp 3 sesi yayınlanamadı: ' + (e.message || e));
+        } else {
+          setFormError('Kaydedilemedi: ' + (e.message || e));
+        }
       } finally {
         saveBtn.disabled = false;
         saveBtn.textContent = 'Değişiklikleri kaydet';
